@@ -18,7 +18,8 @@ class lstm_char_cnn:
 		self.filters = filters # for charCNN  np.sum(filters) = 2048
 
 		with tf.name_scope("placeholder"):
-			self.data = tf.placeholder(tf.int32, [None, self.time_depth, self.word_length], name="char_x") # [N, time_depth, word_length]
+			# data: [N*time_depth, word_length], 이 형식으로 넣어줘야 나중에 char embedding만 추출 가능(data: [N, word_length])
+			self.data = tf.placeholder(tf.int32, [None, self.word_length], name="char_x")
 			self.target = tf.placeholder(tf.int32, [None, self.time_depth], name="target") 
 			self.lr = tf.placeholder(tf.float32, name="lr") # lr
 			self.keep_prob = tf.placeholder(tf.float32, name="keep_prob") # keep_prob
@@ -33,18 +34,18 @@ class lstm_char_cnn:
 			self.embedding_table = self.make_embadding_table(pad_idx=self.pad_idx)
 
 			# charCNN
-			self.before_embedding = self.charCNN(window_size=self.window_size, filters=self.filters) # [N, time_depth, sum(filters)]
-			embedding = self.before_embedding
+			self.before_embedding = self.charCNN(window_size=self.window_size, filters=self.filters) # [N*time_depth, sum(filters)]
+			embedding = self.before_embedding # [N*time_depth, sum(filters)]
 
 			# highway layer
 			for i in range(self.highway_stack):
-				embedding = self.highway_network(embedding=embedding, units=np.sum(filters)) # [N, time_depth, sum(filters)]
-			self.after_embedding = embedding
+				embedding = self.highway_network(embedding=embedding, units=np.sum(filters)) # [N*time_depth, sum(filters)]
+			self.after_embedding = embedding # [N*time_depth, sum(filters)]
 
-
+		
 
 		with tf.name_scope('prediction'):
-			lstm_embedding = self.stacked_LSTM(self.after_embedding, self.lstm_stack) # [N, time_depth, sum(filters)]
+			lstm_embedding = self.stacked_LSTM(self.after_embedding, self.lstm_stack) # [N, time_depth, self.cell_num]
 			self.pred = tf.layers.dense(lstm_embedding, units=self.target_size, activation=None) # [N, time_depth, target_size]
 
 
@@ -59,7 +60,8 @@ class lstm_char_cnn:
 			# calc cost
 			self.cost = tf.nn.softmax_cross_entropy_with_logits(labels=target_one_hot, logits=self.pred) # [N, self.target_length]
 			self.cost *= self.target_pad_mask # except pad
-			self.cost = tf.reduce_sum(self.cost) / tf.reduce_sum(self.target_pad_mask) # == mean loss
+			#self.cost = tf.reduce_sum(self.cost) / tf.reduce_sum(self.target_pad_mask) # == mean loss
+			self.cost = tf.reduce_mean(self.cost)
 
 			clip_norm = 5.0
 			optimizer = tf.train.GradientDescentOptimizer(self.lr)
@@ -72,7 +74,7 @@ class lstm_char_cnn:
 
 		with tf.name_scope("saver"):
 			self.saver = tf.train.Saver(max_to_keep=10000)
-
+		
 
 		self.sess.run(tf.global_variables_initializer())
 
@@ -85,6 +87,7 @@ class lstm_char_cnn:
 		return embedding_table
 
 	def convolution(self, embedding, embedding_size, window_size, filters):
+		# embedding: [N*time_depth, word_length, self.embedding_size, 1]
 		convolved_features = []
 		for i in range(len(window_size)):
 			convolved = tf.layers.conv2d(
@@ -95,63 +98,58 @@ class lstm_char_cnn:
 						padding='VALID', 
 						activation=tf.nn.tanh
 					) # [N, ?, 1, filters]
-			convolved_features.append(convolved) # [N, ?, 1, filters] 이 len(window_size) 만큼 존재.
+			convolved_features.append(convolved) # [N*time_depth, ?, 1, filters] * len(window_size).
 		return convolved_features
 
 
 	def max_pooling(self, convolved_features):
+		# convolved_features: [N*time_depth, ?, 1, filters] * len(window_size)
 		pooled_features = []
-		for convolved in convolved_features: # [N, ?, 1, self.filters]
+		for convolved in convolved_features: # [N*time_depth, ?, 1, self.filters]
 			max_pool = tf.reduce_max(
 						input_tensor = convolved,
 						axis = 1,
 						keep_dims = True
 					) # [N, 1, 1, self.filters]
-			pooled_features.append(max_pool) # [N, 1, 1, self.filters] 이 len(window_size) 만큼 존재.
+			max_pool = tf.layers.flatten(max_pool) # [N*time_depth, self.filters[i]]
+			pooled_features.append(max_pool) # [N*time_depth, self.filters[i]] * len(window_size).
 		return pooled_features
 
 
 	def charCNN(self, window_size, filters):
 		len_word = tf.shape(self.data)[1] # word length
 
-		embedding = tf.nn.embedding_lookup(self.embedding_table, self.data) # [N, word, char, self.embedding_size] 
-		embedding = tf.reshape(embedding, [-1, tf.shape(embedding)[2], self.embedding_size]) # [N*word, char, self.embedding_size]
-			# => convolution 적용하기 위해서 word는 batch화 시킴. 동일하게 적용되도록.
-		embedding = tf.expand_dims(embedding, axis=-1) # [N*word, char, self.embedding, 1]
-			# => convolution을 위해 channel 추가.
+		embedding = tf.nn.embedding_lookup(self.embedding_table, self.data) # [N*time_depth, word_length, self.embedding_size] 
+		embedding = tf.expand_dims(embedding, axis=-1) # [N*time_depth, word_length, self.embedding_size, 1]  => convolution을 위해 channel 추가.
 
-		convolved_embedding = self.convolution(embedding, self.embedding_size, window_size, filters)
-			# => [N*word, ?, 1, filters] 이 len(window_size) 만큼 존재.
-		max_pooled_embedding = self.max_pooling(convolved_features=convolved_embedding)
-			# => [N*word, 1, 1, filters] 이 len(window_size) 만큼 존재. 
-		embedding = tf.concat(max_pooled_embedding, axis=-1) # [N*word, 1, 1, sum(filters)]
-			# => filter 기준으로 concat
-		embedding = tf.reshape(embedding, [-1, len_word, np.sum(filters)]) # [N, word, sum(filters)]
-		return embedding		
+		convolved_embedding = self.convolution(embedding, self.embedding_size, window_size, filters) # [N*time_depth, ?, 1, filters] * len(window_size).
+		max_pooled_embedding = self.max_pooling(convolved_features=convolved_embedding) # [N*time_depth, self.filters[i]] * len(window_size).
+
+		embedding = tf.concat(max_pooled_embedding, axis=-1) # [N*time_depth, sum(filters)], filter 기준으로 concat
+		return embedding
 
 
 	def highway_network(self, embedding, units):
-		# embedding: [N, word, sum(filters)]
-		transform_gate = tf.layers.dense(embedding, units=units, activation=tf.nn.sigmoid, bias_initializer=tf.constant_initializer(-2)) # [N, word, sum(filters)]
-		carry_gate = 1-transform_gate # [N, word, sum(*filters)]
-		block_state = tf.layers.dense(embedding, units=units, activation=tf.nn.relu)
-		highway = transform_gate * block_state + carry_gate * embedding # [N, word, sum(filters)]
+		# embedding: [N*time_depth, sum(filters)]
+		transform_gate = tf.layers.dense(embedding, units=units, activation=tf.nn.sigmoid, bias_initializer=tf.constant_initializer(-2)) # [N*time_depth, sum(filters)]
+		carry_gate = 1-transform_gate # [N*time_depth, sum(filters)]
+		block_state = tf.layers.dense(embedding, units=units, activation=tf.nn.relu) # [N*time_depth, sum(filters)]
+		highway = transform_gate * block_state + carry_gate * embedding # [N*time_depth, sum(filters)]
 			# if transfor_gate is 1. then carry_gate is 0. so only use block_state
 			# if transfor_gate is 0. then carry_gate is 1. so only use embedding
 			# if transfor_gate is 0.@@. then carry_gate is 0.@@. so use sum of scaled block_state and embedding
-		return highway
+		return highway # [N*time_depth, sum(filters)]
 
 
 
 	def stacked_LSTM(self, data, stack):
-		# data [N, self.time_depth, sum(self.filters)]
-
-		fw_input = data
+		# data:  # [N*time_depth, sum(filters)]
+		
+		fw_input = tf.reshape(data, [-1, self.time_depth, np.sum(self.filters)]) # [N, time_depth, sum(filters)]
 		for i in range(stack):
 			cell = tf.contrib.rnn.LSTMCell(self.cell_num)
+
 			# fw_input: shape: [N, self.time_depth, self.cell_num]
 			fw_input, _ = tf.nn.dynamic_rnn(cell, fw_input, dtype=tf.float32, scope='stack_'+str(i))
 			fw_input = tf.nn.dropout(fw_input, self.keep_prob)
-		return fw_input
-
-
+		return fw_input # [N, time_depth, self.cell_num] 

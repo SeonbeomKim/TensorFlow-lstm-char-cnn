@@ -120,7 +120,8 @@ class preprocess:
 						input_list = np.reshape(input_list, [-1]) # input_list: [(time_depth)*word_length]
 						input_target_concat = np.concatenate((input_list, target_list),axis=0)
 						wt.writerow(input_target_concat)	
-					
+						break # 많은 데이터 뽑으려먼 break 제거.
+
 					else:
 						temp = np.pad(temp, (0, time_depth+1-len(temp)), 'constant', constant_values='</p>') # time_depth이 N이면 data는 N+1개 만들어야 함.
 						# make target(word) idx
@@ -167,7 +168,8 @@ class preprocess:
 		word2charidx_list = []
 		for word in word_list_1d:
 			if word in except_word_dict:
-				char_list = np.repeat([char2idx_dict[pad]], word_length)
+				char_list = [char2idx_dict[go], char2idx_dict[pad], char2idx_dict[end]] # ['</g>', '</p>', '</e>']
+				char_list = np.pad(char_list, (0, word_length-len(char_list)), 'constant', constant_values=char2idx_dict[pad])
 				word2charidx_list.append(char_list)
 			else:
 				word2char = [char2idx_dict[go]] + list(word) + [char2idx_dict[end]] # if word: 'my' => ['</g>', 'm', 'y', '</e>']

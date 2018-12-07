@@ -22,32 +22,34 @@ def make_voca_and_data():
 	data_util.get_vocabulary(data_path+'ptb.train.txt', top_voca=None, char_voca=True, save_path=data_savepath)
 
 	# make dataset csv  [N, time_depth * word_length + time_depth]
-	except_word_dict = {'</e>':0, '</p>':1, '<unk>':2, 'N':3} 
+	except_word_dict = {'</e>':0, '</p>':1, '<unk>':2} 
 	data_util.make_char_idx_dataset_csv(data_path+'ptb.train.txt', except_word_dict, voca_path=data_savepath, save_path=data_savepath+'train.csv', time_depth=time_depth, word_length=word_length)
 	data_util.make_char_idx_dataset_csv(data_path+'ptb.valid.txt', except_word_dict, voca_path=data_savepath, save_path=data_savepath+'valid.csv', time_depth=time_depth, word_length=word_length)
 	data_util.make_char_idx_dataset_csv(data_path+'ptb.test.txt', except_word_dict, voca_path=data_savepath, save_path=data_savepath+'test.csv', time_depth=time_depth, word_length=word_length)
 
 
-def load_voca_and_data():
+def load_voca():
 	char2idx = data_util.load_data(data_savepath+'char2idx.npy', data_structure='dictionary')
 	idx2char = data_util.load_data(data_savepath+'idx2char.npy', data_structure='dictionary')
 	word2idx = data_util.load_data(data_savepath+'word2idx.npy', data_structure='dictionary')
 	idx2word = data_util.load_data(data_savepath+'idx2word.npy', data_structure='dictionary')
+	return char2idx, idx2char, word2idx, idx2word
 
+def load_data():
 	# load dataset csv  [N, time_depth*word_length + time_depth]
 	train_set = data_util.read_csv_data(data_savepath+'train.csv')
 	valid_set = data_util.read_csv_data(data_savepath+'valid.csv')
 	test_set = data_util.read_csv_data(data_savepath+'test.csv')
-	
-	return char2idx, idx2char, word2idx, idx2word, train_set, valid_set, test_set	
+	return train_set, valid_set, test_set	
 
 
 
 # if firt start
 make_voca_and_data()
 
-
-char2idx, idx2char, word2idx, idx2word, train_set, valid_set, test_set = load_voca_and_data()
+# second start
+char2idx, idx2char, word2idx, idx2word = load_voca()
+train_set, valid_set, test_set = load_data()
 
 # paper table2
 cell_num = 300
@@ -67,9 +69,8 @@ def train(model, dataset, lr):
 	np.random.shuffle(dataset)
 
 	for i in tqdm(range( int(np.ceil(len(dataset)/batch_size)) ), ncols=50):
-
-		batch = dataset[batch_size * i: batch_size * (i + 1)] # [batch_size, 3]
-		data = batch[:, :time_depth*word_length].reshape(-1, time_depth, word_length) # [batch_size, time_depth, word_length]
+		batch = dataset[batch_size * i: batch_size * (i + 1)]
+		data = batch[:, :time_depth*word_length].reshape(-1, word_length) # [batch_size*time_depth, word_length]
 		target = batch[:, time_depth*word_length:] # [batch_size, time_depth] 
 
 		train_loss, _ = sess.run([model.cost, model.minimize],
@@ -90,13 +91,10 @@ def train(model, dataset, lr):
 def valid_or_test(model, dataset):
 	batch_size = 20
 	loss = 0
-	count = 0
 
 	for i in tqdm(range( int(np.ceil(len(dataset)/batch_size)) ), ncols=50):
-		count += 1
-
-		batch = dataset[batch_size * i: batch_size * (i + 1)] # [batch_size, 3]
-		data = batch[:, :time_depth*word_length].reshape(-1, time_depth, word_length) # [batch_size, time_depth, word_length]
+		batch = dataset[batch_size * i: batch_size * (i + 1)]
+		data = batch[:, :time_depth*word_length].reshape(-1, word_length) # [batch_size*time_depth, word_length]
 		target = batch[:, time_depth*word_length:] # [batch_size, time_depth] 
 
 		current_loss = sess.run(model.cost,
@@ -134,7 +132,7 @@ def run(model, trainset, validset, testset, lr, restore=0):
 
 
 	prev_valid_perplexity = None
-	for epoch in range(restore+1, 20000+1):
+	for epoch in range(restore+1, 30+1):
 		train_loss, train_perplexity = train(model, trainset, lr)
 		valid_loss, valid_perplexity = valid_or_test(model, validset)
 		test_loss, test_perplexity = valid_or_test(model, testset)
@@ -148,7 +146,7 @@ def run(model, trainset, validset, testset, lr, restore=0):
 
 		prev_valid_perplexity = valid_perplexity
 
-		if (epoch) % 10 == 0:
+		if (epoch) % 5 == 0:
 			model.saver.save(sess, tensorflow_saver_path+str(epoch)+".ckpt")
 		
 		# tensorboard
@@ -160,22 +158,24 @@ def run(model, trainset, validset, testset, lr, restore=0):
 		)
 		writer.add_summary(summary, epoch)
 
+
 sess = tf.Session()
 
-model = lstm_char_cnn.lstm_char_cnn(
-			sess = sess,
-			time_depth = time_depth,
-			word_length = word_length,
-			voca_size = voca_size,
-			target_size = target_size,
-			embedding_size = embedding_size,
-			cell_num = cell_num,
-			lstm_stack = lstm_stack,
-			highway_stack = highway_stack,
-			pad_idx = pad_idx,
-			window_size = window_size, 
-			filters = filters
-		)
+with tf.variable_scope("lstm_char_cnn", initializer=tf.initializers.random_uniform(-0.05, 0.05)):
+	model = lstm_char_cnn.lstm_char_cnn(
+				sess = sess,
+				time_depth = time_depth,
+				word_length = word_length,
+				voca_size = voca_size,
+				target_size = target_size,
+				embedding_size = embedding_size,
+				cell_num = cell_num,
+				lstm_stack = lstm_stack,
+				highway_stack = highway_stack,
+				pad_idx = pad_idx,
+				window_size = window_size, 
+				filters = filters
+			)
 
 lr = 1.0
 run(model, train_set, valid_set, test_set, lr, restore=0)
