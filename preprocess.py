@@ -25,12 +25,12 @@ class preprocess:
 
 		#빈도수 상위 top_voca개 뽑음. 튜플형태로 정렬되어있음 [("단어", 빈도수),("단어",빈도수)] 	
 		word_counter = word_counter.most_common(top_voca) # => top_voca is None이면 전부 다.
-		word2idx = {'</p>':0, '</e>':1} # pad eos
-		idx2word = {0:'</p>', 1:'</e>'} # pad eos
+		word2idx = {'</e>':0} # eos
+		idx2word = {0:'</e>'} # eos
 
 		for index, word in enumerate(word_counter):
-			word2idx[word[0]] = index+2
-			idx2word[index+2] = word[0]
+			word2idx[word[0]] = index+1
+			idx2word[index+1] = word[0]
 
 		if char_voca is True:
 			char_counter = char_counter.most_common(None)
@@ -65,117 +65,91 @@ class preprocess:
 		return word2idx, idx2word
 		
 
-	def make_char_idx_dataset_csv(self, data_path, except_word_dict, voca_path=None, save_path=None, time_depth=35, word_length=65):
-		# except_word_dict = {</e>':0, '</p>':1, '<unk>':2, 'N':3} 
-		if voca_path is not None:
-			if os.path.exists(voca_path+'word2idx.npy') and os.path.exists(voca_path+'idx2word.npy') and os.path.exists(voca_path+'char2idx.npy') and os.path.exists(voca_path+'idx2char.npy'):
-				char2idx = self.load_data(voca_path+'char2idx.npy', data_structure='dictionary')
-				idx2char = self.load_data(voca_path+'idx2char.npy', data_structure='dictionary')
-				word2idx = self.load_data(voca_path+'word2idx.npy', data_structure='dictionary')
-				idx2word = self.load_data(voca_path+'idx2word.npy', data_structure='dictionary')				
-			else:
-				word2idx, idx2word, char2idx, idx2char = self.get_vocabulary(data_path, top_voca=None, char_voca=True, save_path=save_path)
+
+	def make_model_dataset(self, data_path, voca_path=None, time_depth=35, word_length=65, batch_size=20):
+
+		if os.path.exists(voca_path+'word2idx.npy') and os.path.exists(voca_path+'idx2word.npy') and os.path.exists(voca_path+'char2idx.npy') and os.path.exists(voca_path+'idx2char.npy'):
+			char2idx = self.load_data(voca_path+'char2idx.npy', data_structure='dictionary')
+			idx2char = self.load_data(voca_path+'idx2char.npy', data_structure='dictionary')
+			word2idx = self.load_data(voca_path+'word2idx.npy', data_structure='dictionary')
+			idx2word = self.load_data(voca_path+'idx2word.npy', data_structure='dictionary')				
 		else:
-			word2idx, idx2word, char2idx, idx2char = self.get_vocabulary(data_path, top_voca=None, char_voca=True, save_path=save_path)
-
-
-		'''
-		print('char2idx', len(char2idx))
-		print('idx2char', len(idx2char))
-		print('word2idx', len(word2idx))
-		print('idx2word', len(idx2word))
-		'''
-		
-		o = open(save_path, 'w', newline='')
-		wt = csv.writer(o)
-
+			word2idx, idx2word, char2idx, idx2char = self.get_vocabulary(data_path, top_voca=None, char_voca=True, save_path=voca_path)
+	
 		with open(data_path, 'r', newline='') as f:
 			wr = csv.reader(f)
 
-			for sentence in wr:
-				# append '</e>' to sentence and padding('</p>')
-				sentence = sentence[0].split() + ['</e>']
+			dataset_queue = []
+			input_dataset = []
+			target_dataset = []
 
-				for start in range(len(sentence)):
-					temp = sentence[start:start+time_depth+1]
-					if len(temp) > time_depth:
-						# make target(word) idx
-						target_list = self._word2idx(
-									word_list_1d=temp[1:], 
-									word2idx_dict=word2idx, 
-									unk='<unk>'
-								) # [time_depth]
+			for sentence in wr: # sentence: [' consumers may want ~~ '] => sentence[0].split(): ['consumers', 'may', 'want', ~~ ]
+				dataset_queue.extend(sentence[0].split() + ['</e>']) # append '</e>' to sentence and padding('</p>')
+
+				while len(dataset_queue) > time_depth: # time_depth 이상이면 슬라이스해서 idx화 
+					input_list = dataset_queue[:time_depth] # 입력부분 slice
+					target_list = dataset_queue[1:1+time_depth] # 타겟부분 slice
+					dataset_queue = dataset_queue[time_depth:] # dataset_queue 사용부분 dequeue
 					
-						# make input(char) idx
-						input_list = self._word2charidx(
-									word_list_1d=temp[:-1], 
-									char2idx_dict=char2idx, 
-									word_length=word_length, 
-									except_word_dict=except_word_dict, 
-									pad='</p>',
-									unk='<unk>',
-									go='</g>',
-									end='</e>'
-								) # [time_depth, word_length]
-						input_list = np.reshape(input_list, [-1]) # input_list: [(time_depth)*word_length]
-						input_target_concat = np.concatenate((input_list, target_list),axis=0)
-						wt.writerow(input_target_concat)	
-						break # 많은 데이터 뽑으려먼 break 제거.
+					# make input(char) idx
+					input_list = self._word2charidx(
+								word_list_1d=input_list, 
+								char2idx_dict=char2idx, 
+								word_length=word_length, 
+								word_unk='<unk>',
+								word_end='</e>',
+								char_go='</g>', 
+								char_end='</e>',
+								char_pad='</p>'
+							) # [time_depth, word_length]
 
-					else:
-						temp = np.pad(temp, (0, time_depth+1-len(temp)), 'constant', constant_values='</p>') # time_depth이 N이면 data는 N+1개 만들어야 함.
-						# make target(word) idx
-						target_list = self._word2idx(
-									word_list_1d=temp[1:], 
-									word2idx_dict=word2idx, 
-									unk='<unk>'
-								) # [time_depth]
-					
-						# make input(char) idx
-						input_list = self._word2charidx(
-									word_list_1d=temp[:-1], 
-									char2idx_dict=char2idx, 
-									word_length=word_length, 
-									except_word_dict=except_word_dict, 
-									pad='</p>',
-									unk='<unk>',
-									go='</g>',
-									end='</e>'
-								) # [time_depth, word_length]
-						input_list = np.reshape(input_list, [-1]) # input_list: [(time_depth)*word_length]
-						input_target_concat = np.concatenate((input_list, target_list),axis=0)
-						wt.writerow(input_target_concat)
-						# else문 실행되면 한번만 반영하고 종료.
-						break
+					target_list = self._word2idx(
+								word_list_1d=target_list, 
+								word2idx_dict=word2idx, 
+								word_unk='<unk>'
+							) # [time_depth]
 
-		o.close()
-		print('ok', save_path)
+					input_dataset.append(input_list) # [-1, time_depth, word_length]
+					target_dataset.append(target_list) # [-1, time_depth]
+
+		input_dataset = np.array(input_dataset)[:(len(input_dataset)//batch_size) * batch_size] # batch size의 배수로 slice
+		target_dataset = np.array(target_dataset)[:(len(input_dataset)//batch_size) * batch_size] # batch size의 배수로 slice
+		
+		input_dataset = input_dataset.reshape(batch_size, -1, time_depth, word_length)
+		input_dataset = input_dataset.transpose(1, 0, 2, 3) # [-1, batch_size, time_depth, word_length]
+
+		target_dataset = target_dataset.reshape(batch_size, -1, time_depth)
+		target_dataset = target_dataset.transpose(1, 0, 2) # [-1, batch_size, time_depth]
+		
+		print(data_path, 'input_dataset', input_dataset.shape)
+		print(data_path, 'target_dataset', target_dataset.shape)
+		return input_dataset, target_dataset
 
 
-	def _word2idx(self, word_list_1d, word2idx_dict, unk='<unk>'):
+	def _word2idx(self, word_list_1d, word2idx_dict, word_unk='<unk>'):
 		word2idx_list = []
 		for word in word_list_1d:
 			if word in word2idx_dict:
 				word2idx_list.append(word2idx_dict[word])
 			else:
-				word2idx_list.append(word2idx_dict[unk]) 
+				word2idx_list.append(word2idx_dict[word_unk]) 
 		return word2idx_list
 
 
-	def _word2charidx(self, word_list_1d, char2idx_dict, word_length, except_word_dict, pad='</p>', unk='<unk>', go='</g>', end='</e>'):
-		# except_word_dict: {'</e>':0} 이런식으로 pad char의 조합으로 표현해야하는 단어들의 딕셔너리.
+	def _word2charidx(self, word_list_1d, char2idx_dict, word_length, word_unk='<unk>', word_end='</e>', 
+				char_go='</g>', char_end='</e>', char_pad='</p>'):
 
 		word2charidx_list = []
 		for word in word_list_1d:
-			if word in except_word_dict:
-				char_list = [char2idx_dict[go], char2idx_dict[pad], char2idx_dict[end]] # ['</g>', '</p>', '</e>']
-				char_list = np.pad(char_list, (0, word_length-len(char_list)), 'constant', constant_values=char2idx_dict[pad])
-				word2charidx_list.append(char_list)
-			else:
-				word2char = [char2idx_dict[go]] + list(word) + [char2idx_dict[end]] # if word: 'my' => ['</g>', 'm', 'y', '</e>']
-				char_list = self._word2idx(word2char, char2idx_dict, unk=unk)
-				char_list = np.pad(char_list, (0, word_length-len(char_list)), 'constant', constant_values=char2idx_dict[pad])
-				word2charidx_list.append(char_list)		
+			if word == word_unk:
+				word = '++++++'
+			elif word == word_end:
+				word = '+'
+
+			word2char = [char2idx_dict[char_go]] + list(word) + [char2idx_dict[char_end]] # if word: 'my' => ['</g>', 'm', 'y', '</e>']
+			char_list = self._word2idx(word2char, char2idx_dict, word_unk=word_unk)
+			char_list = np.pad(char_list, (0, word_length-len(char_list)), 'constant', constant_values=char2idx_dict[char_pad])
+			word2charidx_list.append(char_list)		
 		return word2charidx_list
 
 

@@ -3,7 +3,7 @@ import numpy as np
 
 class lstm_char_cnn:
 	def __init__(self, sess, time_depth, word_length, voca_size, target_size, embedding_size, cell_num, lstm_stack, highway_stack,
-					pad_idx=0, window_size=[2,3,4], filters=[3,4,5]):
+					pad_idx=0, window_size=[2,3,4], filters=[3,4,5], batch_size=20):
 		self.sess = sess
 		self.time_depth = time_depth
 		self.word_length = word_length
@@ -16,6 +16,7 @@ class lstm_char_cnn:
 		self.pad_idx = pad_idx # 0
 		self.window_size = window_size # for charCNN
 		self.filters = filters # for charCNN  np.sum(filters) = 2048
+		self.batch_size = batch_size
 
 		with tf.name_scope("placeholder"):
 			# data: [N*time_depth, word_length], 이 형식으로 넣어줘야 나중에 char embedding만 추출 가능(data: [N, word_length])
@@ -23,12 +24,6 @@ class lstm_char_cnn:
 			self.target = tf.placeholder(tf.int32, [None, self.time_depth], name="target") 
 			self.lr = tf.placeholder(tf.float32, name="lr") # lr
 			self.keep_prob = tf.placeholder(tf.float32, name="keep_prob") # keep_prob
-
-		with tf.name_scope('mask'):
-			self.target_pad_mask = tf.cast( #sequence_mask처럼 생성됨
-						tf.not_equal(self.target, self.pad_idx),
-						dtype=tf.float32
-					) # [N, target_length] (include eos)
 
 		with tf.name_scope("embedding"):		
 			self.embedding_table = self.make_embadding_table(pad_idx=self.pad_idx)
@@ -45,7 +40,7 @@ class lstm_char_cnn:
 		
 
 		with tf.name_scope('prediction'):
-			lstm_embedding = self.stacked_LSTM(self.after_embedding, self.lstm_stack) # [N, time_depth, self.cell_num]
+			lstm_embedding, self.stacked_state_tuple = self.stacked_LSTM(self.after_embedding, self.lstm_stack) # [N, time_depth, self.cell_num]
 			self.pred = tf.layers.dense(lstm_embedding, units=self.target_size, activation=None) # [N, time_depth, target_size]
 
 
@@ -59,17 +54,15 @@ class lstm_char_cnn:
 
 			# calc cost
 			self.cost = tf.nn.softmax_cross_entropy_with_logits(labels=target_one_hot, logits=self.pred) # [N, self.target_length]
-			self.cost *= self.target_pad_mask # except pad
-			#self.cost = tf.reduce_sum(self.cost) / tf.reduce_sum(self.target_pad_mask) # == mean loss
 			self.cost = tf.reduce_mean(self.cost)
 
 			clip_norm = 5.0
 			optimizer = tf.train.GradientDescentOptimizer(self.lr)
 			grads_and_vars = optimizer.compute_gradients(self.cost)
+			
 			#https://www.tensorflow.org/api_docs/python/tf/clip_by_norm
 			clip_grads_and_vars = [(tf.clip_by_norm(gv[0], clip_norm), gv[1]) for gv in grads_and_vars]
 			self.minimize = optimizer.apply_gradients(clip_grads_and_vars)
-			#self.minimize = optimizer.minimize(self.cost)
 
 
 		with tf.name_scope("saver"):
@@ -141,15 +134,51 @@ class lstm_char_cnn:
 		return highway # [N*time_depth, sum(filters)]
 
 
-
+	## truncated stacked LSTM  
+	#https://www.tensorflow.org/tutorials/sequences/recurrent => truncated backprop
 	def stacked_LSTM(self, data, stack):
 		# data:  # [N*time_depth, sum(filters)]
 		
 		fw_input = tf.reshape(data, [-1, self.time_depth, np.sum(self.filters)]) # [N, time_depth, sum(filters)]
+
+		cell_list = []
 		for i in range(stack):
 			cell = tf.contrib.rnn.LSTMCell(self.cell_num)
+			cell_list.append(cell)
 
-			# fw_input: shape: [N, self.time_depth, self.cell_num]
-			fw_input, _ = tf.nn.dynamic_rnn(cell, fw_input, dtype=tf.float32, scope='stack_'+str(i))
+		initial_state_c = tf.zeros([stack*self.batch_size, self.cell_num]) # [stack*N, cell_num]
+		initial_state_h = tf.zeros([stack*self.batch_size, self.cell_num]) # [stack*N, cell_num]
+		
+		# initial_state에 feed dict 해서 사용. (truncated bptt)
+		self.initial_state = tf.contrib.rnn.LSTMStateTuple(c=initial_state_c, h=initial_state_h)
+
+
+		split_initial_state_c = tf.split(self.initial_state.c, stack, axis=0) # stack 등분 
+		split_initial_state_h = tf.split(self.initial_state.h, stack, axis=0) # stack 등분 
+
+		fw_state_c_list = []
+		fw_state_h_list = []
+		for i in range(stack):
+			c = split_initial_state_c[i]
+			h = split_initial_state_h[i]
+			init_state = tf.contrib.rnn.LSTMStateTuple(c=c, h=h)
+
+			# fw_input shape: [N, self.time_depth, self.cell_num], fw_state c, h shape: [N, self.cell_num]
+			fw_input, fw_state = tf.nn.dynamic_rnn(
+					cell_list[i], 
+					fw_input, 
+					initial_state=init_state, 
+					dtype=tf.float32, 
+					scope='stack_'+str(i)
+				)
+
 			fw_input = tf.nn.dropout(fw_input, self.keep_prob)
-		return fw_input # [N, time_depth, self.cell_num] 
+			fw_state_c_list.append(fw_state.c)
+			fw_state_h_list.append(fw_state.h)
+
+
+		fw_state_c = tf.concat(fw_state_c_list, axis=0) # [stack*N, cell_num]
+		fw_state_h = tf.concat(fw_state_h_list, axis=0) # [stack*N, cell_num]
+
+		stacked_state_tuple = tf.contrib.rnn.LSTMStateTuple(c=fw_state_c, h=fw_state_h)
+		return fw_input, stacked_state_tuple 

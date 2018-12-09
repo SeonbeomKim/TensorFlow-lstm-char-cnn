@@ -6,26 +6,41 @@ import os
 import csv
 from tqdm import tqdm
 
-data_util = pr.preprocess()
 
-data_path = './PTB_dataset/'
-data_savepath = './npy/'
-tensorflow_saver_path = './saver/'
-tensorboard_path = './tensorboard/'
-
-time_depth = 35
-word_length = 65
-
-
-def make_voca_and_data():
+def make_voca():
 	# make word2idx idx2word char2idx idx2char dictionary
-	data_util.get_vocabulary(data_path+'ptb.train.txt', top_voca=None, char_voca=True, save_path=data_savepath)
+	data_util.get_vocabulary(
+			data_path+'ptb.train.txt', 
+			top_voca=None, 
+			char_voca=True, 
+			save_path=data_savepath
+		)
 
-	# make dataset csv  [N, time_depth * word_length + time_depth]
-	except_word_dict = {'</e>':0, '</p>':1, '<unk>':2} 
-	data_util.make_char_idx_dataset_csv(data_path+'ptb.train.txt', except_word_dict, voca_path=data_savepath, save_path=data_savepath+'train.csv', time_depth=time_depth, word_length=word_length)
-	data_util.make_char_idx_dataset_csv(data_path+'ptb.valid.txt', except_word_dict, voca_path=data_savepath, save_path=data_savepath+'valid.csv', time_depth=time_depth, word_length=word_length)
-	data_util.make_char_idx_dataset_csv(data_path+'ptb.test.txt', except_word_dict, voca_path=data_savepath, save_path=data_savepath+'test.csv', time_depth=time_depth, word_length=word_length)
+def make_data():
+	train_set = data_util.make_model_dataset(
+			data_path+'ptb.train.txt', 
+			voca_path=data_savepath, 
+			time_depth=time_depth, 
+			word_length=word_length, 
+			batch_size=batch_size
+		)
+	
+	valid_set = data_util.make_model_dataset(
+			data_path+'ptb.valid.txt', 
+			voca_path=data_savepath, 
+			time_depth=time_depth, 
+			word_length=word_length, 
+			batch_size=batch_size
+		)
+	
+	test_set = data_util.make_model_dataset(
+			data_path+'ptb.test.txt', 
+			voca_path=data_savepath, 
+			time_depth=time_depth, 
+			word_length=word_length, 
+			batch_size=batch_size
+		)
+	return train_set, valid_set, test_set
 
 
 def load_voca():
@@ -35,21 +50,27 @@ def load_voca():
 	idx2word = data_util.load_data(data_savepath+'idx2word.npy', data_structure='dictionary')
 	return char2idx, idx2char, word2idx, idx2word
 
-def load_data():
-	# load dataset csv  [N, time_depth*word_length + time_depth]
-	train_set = data_util.read_csv_data(data_savepath+'train.csv')
-	valid_set = data_util.read_csv_data(data_savepath+'valid.csv')
-	test_set = data_util.read_csv_data(data_savepath+'test.csv')
-	return train_set, valid_set, test_set	
 
 
+data_path = './PTB_dataset/'
+data_savepath = './npy/'
+tensorflow_saver_path = './saver/'
+tensorboard_path = './tensorboard/'
+
+time_depth = 35
+word_length = 65
+batch_size = 20
+
+#####
+data_util = pr.preprocess()
 
 # if firt start
-make_voca_and_data()
+#make_voca()
 
-# second start
+# else
+train_set, valid_set, test_set = make_data()
 char2idx, idx2char, word2idx, idx2word = load_voca()
-train_set, valid_set, test_set = load_data()
+#####
 
 # paper table2
 cell_num = 300
@@ -62,53 +83,59 @@ pad_idx = char2idx['</p>']
 window_size = [1,2,3,4,5,6] 
 filters = [i*25 for i in window_size] 
 
+
+
 def train(model, dataset, lr):
-	batch_size = 20
 	loss = 0
 
-	np.random.shuffle(dataset)
-
-	for i in tqdm(range( int(np.ceil(len(dataset)/batch_size)) ), ncols=50):
-		batch = dataset[batch_size * i: batch_size * (i + 1)]
-		data = batch[:, :time_depth*word_length].reshape(-1, word_length) # [batch_size*time_depth, word_length]
-		target = batch[:, time_depth*word_length:] # [batch_size, time_depth] 
-
-		train_loss, _ = sess.run([model.cost, model.minimize],
-					{
-						model.data:data, 
-						model.target:target, 
-						model.lr:lr,
-						model.keep_prob:0.5
-					}
-				)
+	# for truncated bptt
+	initial_state = sess.run(model.initial_state)
+	for i in tqdm(range( len(dataset[0]) ), ncols=50):
+		data = dataset[0][i] # [batch_size, time_depth, word_length]
+		data = data.reshape(-1, word_length) # [batch_siz * time_depth, word_length]
+		target = dataset[1][i] # [batch_size, time_depth]
+		
+		train_loss, _, initial_state = sess.run([model.cost, model.minimize, model.stacked_state_tuple],
+				{
+					model.data:data, 
+					model.target:target, 
+					model.lr:lr,
+					model.keep_prob:0.5,
+					model.initial_state:initial_state
+				}
+			)
 		loss += train_loss
 	
-	loss /= int(np.ceil(len(dataset)/batch_size))
+	loss /= len(dataset[0])
 	perplexity = np.exp(loss)
 	return loss, perplexity
 
 
 def valid_or_test(model, dataset):
-	batch_size = 20
 	loss = 0
 
-	for i in tqdm(range( int(np.ceil(len(dataset)/batch_size)) ), ncols=50):
-		batch = dataset[batch_size * i: batch_size * (i + 1)]
-		data = batch[:, :time_depth*word_length].reshape(-1, word_length) # [batch_size*time_depth, word_length]
-		target = batch[:, time_depth*word_length:] # [batch_size, time_depth] 
+	# for truncated bptt
+	initial_state = sess.run(model.initial_state)
 
-		current_loss = sess.run(model.cost,
-					{
-						model.data:data, 
-						model.target:target, 
-						model.keep_prob:1.0
-					}
-				)
+	for i in tqdm(range( len(dataset[0]) ), ncols=50):
+		data = dataset[0][i] # [batch_size, time_depth, word_length]
+		data = data.reshape(-1, word_length) # [batch_siz * time_depth, word_length]
+		target = dataset[1][i] # [batch_size, time_depth]
+
+		current_loss, initial_state = sess.run([model.cost, model.stacked_state_tuple],
+				{
+					model.data:data, 
+					model.target:target, 
+					model.keep_prob:1,
+					model.initial_state:initial_state
+				}
+			)
 		loss += current_loss
 	
-	loss /= int(np.ceil(len(dataset)/batch_size))
+	loss /= len(dataset[0])
 	perplexity = np.exp(loss)
 	return loss, perplexity
+
 
 
 def run(model, trainset, validset, testset, lr, restore=0):
@@ -174,7 +201,8 @@ with tf.variable_scope("lstm_char_cnn", initializer=tf.initializers.random_unifo
 				highway_stack = highway_stack,
 				pad_idx = pad_idx,
 				window_size = window_size, 
-				filters = filters
+				filters = filters,
+				batch_size = batch_size
 			)
 
 lr = 1.0
