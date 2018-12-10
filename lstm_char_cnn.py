@@ -7,17 +7,18 @@ class lstm_char_cnn:
 		self.sess = sess
 		self.time_depth = time_depth
 		self.word_length = word_length
-		self.voca_size = voca_size # 'word': 단어 개수, 'char': char 개수
+		self.voca_size = voca_size
 		self.target_size = target_size
-		self.embedding_size = embedding_size # 512 == projection size 
-		self.cell_num = cell_num # 4096
+		self.embedding_size = embedding_size
+		self.cell_num = cell_num 
 		self.lstm_stack = lstm_stack  
 		self.highway_stack = highway_stack 
 		self.pad_idx = pad_idx # 0
-		self.window_size = window_size # for charCNN
-		self.filters = filters # for charCNN  np.sum(filters) = 2048
+		self.window_size = window_size 
+		self.filters = filters 
 		self.batch_size = batch_size
-
+		self.initializer = tf.initializers.random_uniform(-0.05, 0.05)
+	
 		with tf.name_scope("placeholder"):
 			# data: [N*time_depth, word_length], 이 형식으로 넣어줘야 나중에 char embedding만 추출 가능(data: [N, word_length])
 			self.data = tf.placeholder(tf.int32, [None, self.word_length], name="char_x")
@@ -41,16 +42,22 @@ class lstm_char_cnn:
 
 		with tf.name_scope('prediction'):
 			lstm_embedding, self.stacked_state_tuple = self.stacked_LSTM(self.after_embedding, self.lstm_stack) # [N, time_depth, self.cell_num]
-			self.pred = tf.layers.dense(lstm_embedding, units=self.target_size, activation=None) # [N, time_depth, target_size]
+			self.pred = tf.layers.dense(
+					lstm_embedding, 
+					units=self.target_size, 
+					activation=None,
+					kernel_initializer=self.initializer,
+					bias_initializer=self.initializer
+				) # [N, time_depth, target_size]
 
 
 		with tf.name_scope('train'): 
 			target_one_hot = tf.one_hot(
-						self.target, # [None, time_depth]
-						depth=self.target_size,
-						on_value = 1., # tf.float32
-						off_value = 0., # tf.float32
-					) # [N, time_depth, target_size]
+					self.target, # [None, time_depth]
+					depth=self.target_size,
+					on_value = 1., # tf.float32
+					off_value = 0., # tf.float32
+				) # [N, time_depth, target_size]
 
 			# calc cost
 			self.cost = tf.nn.softmax_cross_entropy_with_logits(labels=target_one_hot, logits=self.pred) # [N, self.target_length]
@@ -67,30 +74,36 @@ class lstm_char_cnn:
 
 		with tf.name_scope("saver"):
 			self.saver = tf.train.Saver(max_to_keep=10000)
-		
-
 		self.sess.run(tf.global_variables_initializer())
+
 
 
 	def make_embadding_table(self, pad_idx):
 		zero = tf.zeros([1, self.embedding_size], dtype=tf.float32) # for padding
-		embedding_table = tf.Variable(tf.random_uniform([self.voca_size-1, self.embedding_size], -0.05, 0.05)) 
+		embedding_table = tf.get_variable(
+				name='embedding_table', 
+				shape=[self.voca_size-1, self.embedding_size],
+				initializer=self.initializer
+			)
 		front, end = tf.split(embedding_table, [pad_idx, -1])
 		embedding_table = tf.concat((front, zero, end), axis=0)
 		return embedding_table
+
 
 	def convolution(self, embedding, embedding_size, window_size, filters):
 		# embedding: [N*time_depth, word_length, self.embedding_size, 1]
 		convolved_features = []
 		for i in range(len(window_size)):
 			convolved = tf.layers.conv2d(
-						inputs = embedding, 
-						filters = filters[i], 
-						kernel_size = [window_size[i], embedding_size], 
-						strides=[1, 1], 
-						padding='VALID', 
-						activation=tf.nn.tanh
-					) # [N, ?, 1, filters]
+					inputs = embedding, 
+					filters = filters[i], 
+					kernel_size = [window_size[i], embedding_size], 
+					strides=[1, 1], 
+					padding='VALID', 
+					activation=tf.nn.tanh,
+					kernel_initializer=self.initializer,
+					bias_initializer=self.initializer
+				) # [N, ?, 1, filters]
 			convolved_features.append(convolved) # [N*time_depth, ?, 1, filters] * len(window_size).
 		return convolved_features
 
@@ -100,10 +113,10 @@ class lstm_char_cnn:
 		pooled_features = []
 		for convolved in convolved_features: # [N*time_depth, ?, 1, self.filters]
 			max_pool = tf.reduce_max(
-						input_tensor = convolved,
-						axis = 1,
-						keep_dims = True
-					) # [N, 1, 1, self.filters]
+					input_tensor = convolved,
+					axis = 1,
+					keep_dims = True
+				) # [N, 1, 1, self.filters]
 			max_pool = tf.layers.flatten(max_pool) # [N*time_depth, self.filters[i]]
 			pooled_features.append(max_pool) # [N*time_depth, self.filters[i]] * len(window_size).
 		return pooled_features
@@ -124,9 +137,21 @@ class lstm_char_cnn:
 
 	def highway_network(self, embedding, units):
 		# embedding: [N*time_depth, sum(filters)]
-		transform_gate = tf.layers.dense(embedding, units=units, activation=tf.nn.sigmoid, bias_initializer=tf.constant_initializer(-2)) # [N*time_depth, sum(filters)]
+		transform_gate = tf.layers.dense(
+				embedding, 
+				units=units, 
+				activation=tf.nn.sigmoid, 
+				kernel_initializer=self.initializer,
+				bias_initializer=tf.constant_initializer(-2)
+			) # [N*time_depth, sum(filters)]
 		carry_gate = 1-transform_gate # [N*time_depth, sum(filters)]
-		block_state = tf.layers.dense(embedding, units=units, activation=tf.nn.relu) # [N*time_depth, sum(filters)]
+		block_state = tf.layers.dense(
+				embedding, 
+				units=units, 
+				activation=tf.nn.relu,
+				kernel_initializer=self.initializer,
+				bias_initializer=self.initializer
+			) # [N*time_depth, sum(filters)]
 		highway = transform_gate * block_state + carry_gate * embedding # [N*time_depth, sum(filters)]
 			# if transfor_gate is 1. then carry_gate is 0. so only use block_state
 			# if transfor_gate is 0. then carry_gate is 1. so only use embedding
@@ -143,7 +168,8 @@ class lstm_char_cnn:
 
 		cell_list = []
 		for i in range(stack):
-			cell = tf.contrib.rnn.LSTMCell(self.cell_num)
+			cell = tf.contrib.rnn.LSTMCell(self.cell_num, initializer=self.initializer, reuse=False)
+			#cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=self.keep_prob)
 			cell_list.append(cell)
 
 		initial_state_c = tf.zeros([stack*self.batch_size, self.cell_num]) # [stack*N, cell_num]
@@ -151,7 +177,6 @@ class lstm_char_cnn:
 		
 		# initial_state에 feed dict 해서 사용. (truncated bptt)
 		self.initial_state = tf.contrib.rnn.LSTMStateTuple(c=initial_state_c, h=initial_state_h)
-
 
 		split_initial_state_c = tf.split(self.initial_state.c, stack, axis=0) # stack 등분 
 		split_initial_state_h = tf.split(self.initial_state.h, stack, axis=0) # stack 등분 
@@ -173,9 +198,9 @@ class lstm_char_cnn:
 				)
 
 			fw_input = tf.nn.dropout(fw_input, self.keep_prob)
+
 			fw_state_c_list.append(fw_state.c)
 			fw_state_h_list.append(fw_state.h)
-
 
 		fw_state_c = tf.concat(fw_state_c_list, axis=0) # [stack*N, cell_num]
 		fw_state_h = tf.concat(fw_state_h_list, axis=0) # [stack*N, cell_num]

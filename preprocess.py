@@ -34,12 +34,12 @@ class preprocess:
 
 		if char_voca is True:
 			char_counter = char_counter.most_common(None)
-			char2idx = {'</p>':0, '<unk>':1, '</g>':2, '</e>':3} # pad, unk, go, eos
-			idx2char = {0:'</p>', 1:'<unk>', 2:'</g>', 3:'</e>'} # pad, unk, go ,eos
+			char2idx = {'</p>':0, '<unk>':1, '</g>':2, '</e>':3, '+':4} # pad, unk, go, eos
+			idx2char = {0:'</p>', 1:'<unk>', 2:'</g>', 3:'</e>', 4:'+'} # pad, unk, go ,eos
 			
 			for index, char in enumerate(char_counter):
-				char2idx[char[0]] = index+4
-				idx2char[index+4] = char[0]
+				char2idx[char[0]] = index+5
+				idx2char[index+5] = char[0]
 
 		
 		if save_path is not None:
@@ -142,11 +142,16 @@ class preprocess:
 		word2charidx_list = []
 		for word in word_list_1d:
 			if word == word_unk:
-				word = '++++++'
+				word2char = ['</g>', '<unk>', '<unk>', '<unk>', '</e>'] # ['</g>', '<unk>', '</e>']
+				#word2char = [char2idx_dict[char_go]] + ['<unk>'] + [char2idx_dict[char_end]] # ['</g>', '<unk>', '</e>']
+				
 			elif word == word_end:
-				word = '+'
-
-			word2char = [char2idx_dict[char_go]] + list(word) + [char2idx_dict[char_end]] # if word: 'my' => ['</g>', 'm', 'y', '</e>']
+				word2char = ['</g>', '+', '+', '+', '</e>'] # ['</g>', '+', '</e>']
+				#word2char = [char2idx_dict[char_go]] + ['+'] + [char2idx_dict[char_end]] # ['</g>', '+', '</e>']
+				
+			else:
+				word2char = [char2idx_dict[char_go]] + list(word) + [char2idx_dict[char_end]] # if word: 'my' => ['</g>', 'm', 'y', '</e>']
+			
 			char_list = self._word2idx(word2char, char2idx_dict, word_unk=word_unk)
 			char_list = np.pad(char_list, (0, word_length-len(char_list)), 'constant', constant_values=char2idx_dict[char_pad])
 			word2charidx_list.append(char_list)		

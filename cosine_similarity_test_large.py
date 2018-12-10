@@ -9,7 +9,7 @@ from tqdm import tqdm
 data_util = pr.preprocess()
 
 data_savepath = './npy/'
-tensorflow_saver_path = './saver/'
+tensorflow_saver_path = './saver_large/'
 
 time_depth = 35
 word_length = 65
@@ -105,15 +105,15 @@ def make_word2char_embedding(model, data_util, char2idx, word2idx):
 char2idx, idx2char, word2idx, idx2word = load_voca()
 
 # paper table2
-cell_num = 300
+cell_num = 650
 voca_size = len(char2idx)
 target_size = len(word2idx)
 embedding_size = 15 # == projection size 
 lstm_stack = 2 # L=2
-highway_stack = 1
+highway_stack = 2
 pad_idx = char2idx['</p>']
-window_size = [1,2,3,4,5,6] 
-filters = [i*25 for i in window_size] 
+window_size = [1,2,3,4,5,6,7] 
+filters = [min(i*50, 200) for i in window_size] 
 
 
 sess = tf.Session()
@@ -135,7 +135,6 @@ model = lstm_char_cnn.lstm_char_cnn(
 restore = 40
 model.saver.restore(sess, tensorflow_saver_path+str(restore)+".ckpt")
 print(tensorflow_saver_path+str(restore)+".ckpt")
-
 
 
 # only first
