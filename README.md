@@ -13,6 +13,8 @@ Character-Aware Neural Language Models (Yoon Kim), lstm-char-cnn
    * Paper large_test_ppl: 78.9
    * Paper small_test_ppl: 92.3  
    * My result <br/><br/>
+      * large_test_ppl: 94.95
+      * small_test_ppl: 97.59  <br/><br/>
    ![PPL](./result_image/perplexity.png)
    <br/><br/>
    
